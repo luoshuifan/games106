@@ -1,7 +1,7 @@
 // Copyright 2020 Google LLC
 
-Texture2D textureColorMap : register(t0, space1);
-SamplerState samplerColorMap : register(s0, space1);
+Texture2D textureColorMap : register(t1, space1);
+SamplerState samplerColorMap : register(s1, space1);
 
 struct PushConsts {
 	float4x4 model;
