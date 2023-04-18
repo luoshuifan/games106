@@ -1,0 +1,2 @@
+glslangValidator -V D:\Games\games106\data\homework\shaders\glsl\homework1\mesh.frag -o D:\Games\games106\data\homework\shaders\glsl\homework1\mesh.frag.spv
+glslangValidator -V D:\Games\games106\data\homework\shaders\glsl\homework1\mesh.vert -o D:\Games\games106\data\homework\shaders\glsl\homework1\mesh.vert.spv
