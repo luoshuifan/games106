@@ -21,7 +21,7 @@ namespace vks
 	{
 	private:
 		uint16_t *heightdata;
-		uint32_t dim;
+		uint32_t BRDFLutSize;
 		uint32_t scale;
 
 		vks::VulkanDevice *device = nullptr;

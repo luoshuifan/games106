@@ -39,6 +39,7 @@ enum PBRTextureBinding : int8_t
 	BaseColorTexture,
 	MetallicRoughness_OcclusionTexture,
 	NormalTexture,
+	BRDFLut,
 };
 #endif
 
@@ -57,6 +58,7 @@ public:
 		glm::vec3 normal;
 		glm::vec2 uv;
 		glm::vec3 color;
+		glm::vec3 tangent;
 	};
 
 	// Single vertex buffer for all primitives
@@ -101,9 +103,23 @@ public:
 		}
 	};
 
+	struct MaterialFactor
+	{
+		glm::vec4 baseColorFactor = glm::vec4(1.0f);
+		glm::vec3 emissiveFactor = glm::vec3(0.0f);
+		int32_t metallicFactor = 1;
+		int32_t roughnessFactor = 1;
+	};
+
+	struct
+	{
+		vks::Buffer MaterialBuffer;
+		VkDescriptorSet descriptorSet;
+	}uniformBuffers;
+
 	// A glTF material stores information in e.g. the texture that is attached to it and colors
 	struct Material {
-		glm::vec4 baseColorFactor = glm::vec4(1.0f);
+		MaterialFactor materialFactor;
 		uint32_t baseColorTextureIndex;
 		uint32_t MetallicRoughness_OcclusionTextureIndex;
 		uint32_t NormalTextureIndex;
@@ -207,7 +223,7 @@ public:
 			tinygltf::Material glTFMaterial = input.materials[i];
 			// Get the base color factor
 			if (glTFMaterial.values.find("baseColorFactor") != glTFMaterial.values.end()) {
-				materials[i].baseColorFactor = glm::make_vec4(glTFMaterial.values["baseColorFactor"].ColorFactor().data());
+				materials[i].materialFactor.baseColorFactor = glm::make_vec4(glTFMaterial.values["baseColorFactor"].ColorFactor().data());
 			}
 			// Get base color texture index
 			if (glTFMaterial.values.find("baseColorTexture") != glTFMaterial.values.end()) {
@@ -264,6 +280,7 @@ public:
 					const float* positionBuffer = nullptr;
 					const float* normalsBuffer = nullptr;
 					const float* texCoordsBuffer = nullptr;
+					const float* tangentsBuffer = nullptr;
 					size_t vertexCount = 0;
 
 					// Get buffer data for vertex positions
@@ -286,6 +303,12 @@ public:
 						const tinygltf::BufferView& view = input.bufferViews[accessor.bufferView];
 						texCoordsBuffer = reinterpret_cast<const float*>(&(input.buffers[view.buffer].data[accessor.byteOffset + view.byteOffset]));
 					}
+					if (glTFPrimitive.attributes.find("TANGENT") != glTFPrimitive.attributes.end())
+					{
+						const tinygltf::Accessor& accessor = input.accessors[glTFPrimitive.attributes.find("TANGENT")->second];
+						const tinygltf::BufferView& view = input.bufferViews[accessor.bufferView];
+						tangentsBuffer = reinterpret_cast<const float*>(&(input.buffers[view.buffer].data[accessor.byteOffset + view.byteOffset]));
+					}
 
 					// Append data to model's vertex buffer
 					for (size_t v = 0; v < vertexCount; v++) {
@@ -294,6 +317,7 @@ public:
 						vert.normal = glm::normalize(glm::vec3(normalsBuffer ? glm::make_vec3(&normalsBuffer[v * 3]) : glm::vec3(0.0f)));
 						vert.uv = texCoordsBuffer ? glm::make_vec2(&texCoordsBuffer[v * 2]) : glm::vec3(0.0f);
 						vert.color = glm::vec3(1.0f);
+						vert.tangent = tangentsBuffer ? glm::make_vec3(&tangentsBuffer[v * 3]) : glm::vec3(1, 0, 0);
 						vertexBuffer.push_back(vert);
 					}
 				}
@@ -377,10 +401,11 @@ public:
 			for (VulkanglTFModel::Primitive& primitive : node->mesh.primitives) {
 				if (primitive.indexCount > 0) {
 					// Get the texture index for this primitive
+					MaterialFactor materialFactor = materials[primitive.materialIndex].materialFactor;
 					VulkanglTFModel::Texture BaseColorTexture = textures[materials[primitive.materialIndex].baseColorTextureIndex];
-					VulkanglTFModel::Texture MetallicRoughness_OcclusionTexture =
-						textures[materials[primitive.materialIndex].MetallicRoughness_OcclusionTextureIndex];
-					VulkanglTFModel::Texture NormalTexture = textures[materials[primitive.materialIndex].NormalTextureIndex];
+
+					memcpy(uniformBuffers.MaterialBuffer.mapped, &materialFactor, sizeof(MaterialFactor));
+
 					vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 1, 1, &images[BaseColorTexture.imageIndex].descriptorSet, 0, nullptr);
 					vkCmdDrawIndexed(commandBuffer, primitive.indexCount, 1, primitive.firstIndex, 0, 0);
 				}
@@ -406,12 +431,218 @@ public:
 
 };
 
+namespace PBRGenTexture
+{
+	constexpr int32_t BRDFLutSize = 512;
+	constexpr VkFormat BRDFLutFormat = VK_FORMAT_R16G16_SFLOAT;
+	void generateBRDFLut(
+		vks::Texture2D& lut, 
+		vks::VulkanDevice* phyDevice, 
+		VkDevice* logDevice,
+		VkPipelineCache* pipelineCache, 
+		std::array<VkPipelineShaderStageCreateInfo, 2>& shaderStages,
+		VkQueue* queue)
+	{
+		// Image
+		VkImageCreateInfo imageCI = vks::initializers::imageCreateInfo();
+		imageCI.imageType = VK_IMAGE_TYPE_2D;
+		imageCI.format = BRDFLutFormat;
+		imageCI.extent.width = BRDFLutSize;
+		imageCI.extent.height = BRDFLutSize;
+		imageCI.extent.depth = 1;
+		imageCI.mipLevels = 1;
+		imageCI.arrayLayers = 1;
+		imageCI.samples = VK_SAMPLE_COUNT_1_BIT;
+		imageCI.tiling = VK_IMAGE_TILING_OPTIMAL;
+		imageCI.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+		VK_CHECK_RESULT(vkCreateImage(*logDevice, &imageCI, nullptr, &lut.image));
+		VkMemoryAllocateInfo memAlloc = vks::initializers::memoryAllocateInfo();
+		VkMemoryRequirements memReqs;
+		vkGetImageMemoryRequirements(*logDevice, lut.image, &memReqs);
+		memAlloc.allocationSize = memReqs.size;
+		memAlloc.memoryTypeIndex = phyDevice->getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		VK_CHECK_RESULT(vkAllocateMemory(*logDevice, &memAlloc, nullptr, &lut.deviceMemory));
+		VK_CHECK_RESULT(vkBindImageMemory(*logDevice, lut.image, lut.deviceMemory, 0));
+		// Image view
+		VkImageViewCreateInfo viewCI = vks::initializers::imageViewCreateInfo();
+		viewCI.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		viewCI.format = BRDFLutFormat;
+		viewCI.subresourceRange = {};
+		viewCI.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		viewCI.subresourceRange.levelCount = 1;
+		viewCI.subresourceRange.layerCount = 1;
+		viewCI.image =lut.image;
+		VK_CHECK_RESULT(vkCreateImageView(*logDevice, &viewCI, nullptr, &lut.view));
+		// Sampler
+		VkSamplerCreateInfo samplerCI = vks::initializers::samplerCreateInfo();
+		samplerCI.magFilter = VK_FILTER_LINEAR;
+		samplerCI.minFilter = VK_FILTER_LINEAR;
+		samplerCI.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+		samplerCI.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerCI.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerCI.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerCI.minLod = 0.0f;
+		samplerCI.maxLod = 1.0f;
+		samplerCI.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+		VK_CHECK_RESULT(vkCreateSampler(*logDevice, &samplerCI, nullptr, &lut.sampler));
+
+		lut.descriptor.imageView = lut.view;
+		lut.descriptor.sampler = lut.sampler;
+		lut.descriptor.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		lut.device = phyDevice;
+
+		// FB, Att, RP, Pipe, etc.
+		VkAttachmentDescription attDesc = {};
+		// Color attachment
+		attDesc.format = BRDFLutFormat;
+		attDesc.samples = VK_SAMPLE_COUNT_1_BIT;
+		attDesc.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		attDesc.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		attDesc.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		attDesc.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		attDesc.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		attDesc.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		VkAttachmentReference colorReference = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+
+		VkSubpassDescription subpassDescription = {};
+		subpassDescription.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+		subpassDescription.colorAttachmentCount = 1;
+		subpassDescription.pColorAttachments = &colorReference;
+
+		// Use subpass dependencies for layout transitions
+		std::array<VkSubpassDependency, 2> dependencies;
+		dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+		dependencies[0].dstSubpass = 0;
+		dependencies[0].srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+		dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		dependencies[0].srcAccessMask = VK_ACCESS_NONE;
+		dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+		dependencies[1].srcSubpass = 0;
+		dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+		dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		dependencies[1].dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+		dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		dependencies[1].dstAccessMask = VK_ACCESS_NONE;
+		dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+		// Create the actual renderpass
+		VkRenderPassCreateInfo renderPassCI = vks::initializers::renderPassCreateInfo();
+		renderPassCI.attachmentCount = 1;
+		renderPassCI.pAttachments = &attDesc;
+		renderPassCI.subpassCount = 1;
+		renderPassCI.pSubpasses = &subpassDescription;
+		renderPassCI.dependencyCount = 2;
+		renderPassCI.pDependencies = dependencies.data();
+
+		VkRenderPass renderpass;
+		VK_CHECK_RESULT(vkCreateRenderPass(*logDevice, &renderPassCI, nullptr, &renderpass));
+
+		VkFramebufferCreateInfo framebufferCI = vks::initializers::framebufferCreateInfo();
+		framebufferCI.renderPass = renderpass;
+		framebufferCI.attachmentCount = 1;
+		framebufferCI.pAttachments = &lut.view;
+		framebufferCI.width = BRDFLutSize;
+		framebufferCI.height = BRDFLutSize;
+		framebufferCI.layers = 1;
+
+		VkFramebuffer framebuffer;
+		VK_CHECK_RESULT(vkCreateFramebuffer(*logDevice, &framebufferCI, nullptr, &framebuffer));
+
+		// Descriptors
+		VkDescriptorSetLayout descriptorsetlayout;
+		std::vector<VkDescriptorSetLayoutBinding> setLayoutBindings = {};
+		VkDescriptorSetLayoutCreateInfo descriptorsetlayoutCI = vks::initializers::descriptorSetLayoutCreateInfo(setLayoutBindings);
+		VK_CHECK_RESULT(vkCreateDescriptorSetLayout(*logDevice, &descriptorsetlayoutCI, nullptr, &descriptorsetlayout));
+
+		// Descriptor Pool
+		std::vector<VkDescriptorPoolSize> poolSizes = { vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1) };
+		VkDescriptorPoolCreateInfo descriptorPoolCI = vks::initializers::descriptorPoolCreateInfo(poolSizes, 2);
+		VkDescriptorPool descriptorpool;
+		VK_CHECK_RESULT(vkCreateDescriptorPool(*logDevice, &descriptorPoolCI, nullptr, &descriptorpool));
+
+		// Descriptor sets
+		VkDescriptorSet descriptorset;
+		VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(descriptorpool, &descriptorsetlayout, 1);
+		VK_CHECK_RESULT(vkAllocateDescriptorSets(*logDevice, &allocInfo, &descriptorset));
+
+		// Pipeline layout
+		VkPipelineLayout pipelinelayout;
+		VkPipelineLayoutCreateInfo pipelineLayoutCI = vks::initializers::pipelineLayoutCreateInfo(&descriptorsetlayout, 1);
+		VK_CHECK_RESULT(vkCreatePipelineLayout(*logDevice, &pipelineLayoutCI, nullptr, &pipelinelayout));
+
+		// Pipeline
+		VkPipelineInputAssemblyStateCreateInfo inputAssemblyState = vks::initializers::pipelineInputAssemblyStateCreateInfo(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 0, VK_FALSE);
+		VkPipelineRasterizationStateCreateInfo rasterizationState = vks::initializers::pipelineRasterizationStateCreateInfo(VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+		VkPipelineColorBlendAttachmentState blendAttachmentState = vks::initializers::pipelineColorBlendAttachmentState(0xf, VK_FALSE);
+		VkPipelineColorBlendStateCreateInfo colorBlendState = vks::initializers::pipelineColorBlendStateCreateInfo(1, &blendAttachmentState);
+		VkPipelineDepthStencilStateCreateInfo depthStencilState = vks::initializers::pipelineDepthStencilStateCreateInfo(VK_FALSE, VK_FALSE, VK_COMPARE_OP_LESS_OR_EQUAL);
+		VkPipelineViewportStateCreateInfo viewportState = vks::initializers::pipelineViewportStateCreateInfo(1, 1);
+		VkPipelineMultisampleStateCreateInfo multisampleState = vks::initializers::pipelineMultisampleStateCreateInfo(VK_SAMPLE_COUNT_1_BIT);
+		std::vector<VkDynamicState> dynamicStateEnables = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+		VkPipelineDynamicStateCreateInfo dynamicState = vks::initializers::pipelineDynamicStateCreateInfo(dynamicStateEnables);
+		VkPipelineVertexInputStateCreateInfo emptyInputState = vks::initializers::pipelineVertexInputStateCreateInfo();
+
+		VkGraphicsPipelineCreateInfo pipelineCI = vks::initializers::pipelineCreateInfo(pipelinelayout, renderpass);
+		pipelineCI.pInputAssemblyState = &inputAssemblyState;
+		pipelineCI.pRasterizationState = &rasterizationState;
+		pipelineCI.pColorBlendState = &colorBlendState;
+		pipelineCI.pMultisampleState = &multisampleState;
+		pipelineCI.pViewportState = &viewportState;
+		pipelineCI.pDepthStencilState = &depthStencilState;
+		pipelineCI.pDynamicState = &dynamicState;
+		pipelineCI.stageCount = 2;
+		pipelineCI.pStages = shaderStages.data();
+		pipelineCI.pVertexInputState = &emptyInputState;
+
+		// Look-up-table (from BRDF) pipeline
+		//shaderStages[0] = loadShader(getShadersPath() + "pbrtexture/genbrdflut.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
+		//shaderStages[1] = loadShader(getShadersPath() + "pbrtexture/genbrdflut.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
+		VkPipeline pipeline;
+		VK_CHECK_RESULT(vkCreateGraphicsPipelines(*logDevice, *pipelineCache, 1, &pipelineCI, nullptr, &pipeline));
+
+		// Render
+		VkClearValue clearValues[1];
+		clearValues[0].color = { { 0.0f, 0.0f, 0.0f, 1.0f } };
+
+		VkRenderPassBeginInfo renderPassBeginInfo = vks::initializers::renderPassBeginInfo();
+		renderPassBeginInfo.renderPass = renderpass;
+		renderPassBeginInfo.renderArea.extent.width = BRDFLutSize;
+		renderPassBeginInfo.renderArea.extent.height = BRDFLutSize;
+		renderPassBeginInfo.clearValueCount = 1;
+		renderPassBeginInfo.pClearValues = clearValues;
+		renderPassBeginInfo.framebuffer = framebuffer;
+
+		VkCommandBuffer cmdBuf = phyDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+		vkCmdBeginRenderPass(cmdBuf, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+		VkViewport viewport = vks::initializers::viewport((float)BRDFLutSize, (float)BRDFLutSize, 0.0f, 1.0f);
+		VkRect2D scissor = vks::initializers::rect2D(BRDFLutSize, BRDFLutSize, 0, 0);
+		vkCmdSetViewport(cmdBuf, 0, 1, &viewport);
+		vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
+		vkCmdBindPipeline(cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+		vkCmdDraw(cmdBuf, 3, 1, 0, 0);
+		vkCmdEndRenderPass(cmdBuf);
+		phyDevice->flushCommandBuffer(cmdBuf, *queue);
+
+		vkQueueWaitIdle(*queue);
+
+		vkDestroyPipeline(*logDevice, pipeline, nullptr);
+		vkDestroyPipelineLayout(*logDevice, pipelinelayout, nullptr);
+		vkDestroyRenderPass(*logDevice, renderpass, nullptr);
+		vkDestroyFramebuffer(*logDevice, framebuffer, nullptr);
+		vkDestroyDescriptorSetLayout(*logDevice, descriptorsetlayout, nullptr);
+		vkDestroyDescriptorPool(*logDevice, descriptorpool, nullptr);
+	}
+}
+
 class VulkanExample : public VulkanExampleBase
 {
 public:
 	bool wireframe = false;
 
 	VulkanglTFModel glTFModel;
+
+	vks::Texture2D BRDFLutTexture;
 
 	struct ShaderData {
 		vks::Buffer buffer;
@@ -460,6 +691,7 @@ public:
 		vkDestroyDescriptorSetLayout(device, descriptorSetLayouts.textures, nullptr);
 
 		shaderData.buffer.destroy();
+		BRDFLutTexture.destroy();
 	}
 
 	virtual void getEnabledFeatures()
@@ -620,7 +852,8 @@ public:
 
 	void loadAssets()
 	{
-		loadglTFFile(getAssetPath() + "data/models/FlightHelmet/glTF/FlightHelmet.gltf");
+		//loadglTFFile(getAssetPath() + "data/models/FlightHelmet/glTF/FlightHelmet.gltf");
+		loadglTFFile(getAssetPath() + "buster_drone/busterDrone.gltf");
 	}
 
 	void setupDescriptors()
@@ -630,13 +863,13 @@ public:
 		*/
 
 		std::vector<VkDescriptorPoolSize> poolSizes = {
-			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1),
+			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2),
 			// One combined image sampler per model image/texture
 			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, static_cast<uint32_t>(glTFModel.images.size())),
 		};
 		// One set for matrices and one per model image/texture
 		//const uint32_t maxSetCount = static_cast<uint32_t>(glTFModel.images.size()) + 1;
-		const uint32_t maxSetCount = static_cast<uint32_t>(glTFModel.images.size() / 3) + 1;
+		const uint32_t maxSetCount = static_cast<uint32_t>(glTFModel.images.size() / 3) + 2;
 		VkDescriptorPoolCreateInfo descriptorPoolInfo = vks::initializers::descriptorPoolCreateInfo(poolSizes, maxSetCount);
 		VK_CHECK_RESULT(vkCreateDescriptorPool(device, &descriptorPoolInfo, nullptr, &descriptorPool));
 
@@ -651,12 +884,15 @@ public:
 		{
 			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT, PBRTextureBinding::BaseColorTexture),
 			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT, PBRTextureBinding::MetallicRoughness_OcclusionTexture),
-			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT, PBRTextureBinding::NormalTexture)
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT, PBRTextureBinding::NormalTexture),
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT, PBRTextureBinding::BRDFLut),
 		};
 
 		VkDescriptorSetLayoutCreateInfo PBRCreateInfo = vks::initializers::descriptorSetLayoutCreateInfo(PBRTextureLayoutBindings);
 		VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &PBRCreateInfo, nullptr, &descriptorSetLayouts.textures));
 #endif
+
+		//VkDescriptorSetLayoutBinding BufferSetLayoutBinding = vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, vk_)
 
 		// Pipeline layout using both descriptor sets (set 0 = matrices, set 1 = material)
 		std::array<VkDescriptorSetLayout, 2> setLayouts = 
@@ -681,7 +917,7 @@ public:
 		for (auto& Material : glTFModel.materials)
 		{
 			const VkDescriptorSetAllocateInfo PBRAllocInfo = vks::initializers::descriptorSetAllocateInfo(descriptorPool, &descriptorSetLayouts.textures, 1);
-			std::vector<VkWriteDescriptorSet> PBRWriteDescriptorSet(3);
+			std::vector<VkWriteDescriptorSet> PBRWriteDescriptorSet(4);
 
 			VulkanglTFModel::Image& BaseColorTexture = glTFModel.images[glTFModel.textures[Material.baseColorTextureIndex].imageIndex];
 			VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &PBRAllocInfo, &BaseColorTexture.descriptorSet));
@@ -693,6 +929,8 @@ public:
 
 			VulkanglTFModel::Image& NormalTexture = glTFModel.images[glTFModel.textures[Material.NormalTextureIndex].imageIndex];
 			PBRWriteDescriptorSet[2] = vks::initializers::writeDescriptorSet(BaseColorTexture.descriptorSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, PBRTextureBinding::NormalTexture, &NormalTexture.texture.descriptor);
+
+			PBRWriteDescriptorSet[3] = vks::initializers::writeDescriptorSet(BaseColorTexture.descriptorSet, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, PBRTextureBinding::BRDFLut, &BRDFLutTexture.descriptor);
 
 			vkUpdateDescriptorSets(device, static_cast<uint32_t>(PBRWriteDescriptorSet.size()), PBRWriteDescriptorSet.data(), 0, nullptr);
 		}
@@ -718,6 +956,7 @@ public:
 			vks::initializers::vertexInputAttributeDescription(0, 1, VK_FORMAT_R32G32B32_SFLOAT, offsetof(VulkanglTFModel::Vertex, normal)),// Location 1: Normal
 			vks::initializers::vertexInputAttributeDescription(0, 2, VK_FORMAT_R32G32B32_SFLOAT, offsetof(VulkanglTFModel::Vertex, uv)),	// Location 2: Texture coordinates
 			vks::initializers::vertexInputAttributeDescription(0, 3, VK_FORMAT_R32G32B32_SFLOAT, offsetof(VulkanglTFModel::Vertex, color)),	// Location 3: Color
+			vks::initializers::vertexInputAttributeDescription(0, 4, VK_FORMAT_R32G32B32_SFLOAT, offsetof(VulkanglTFModel::Vertex, tangent)), //Location 4: tangent
 		};
 		VkPipelineVertexInputStateCreateInfo vertexInputStateCI = vks::initializers::pipelineVertexInputStateCreateInfo();
 		vertexInputStateCI.vertexBindingDescriptionCount = static_cast<uint32_t>(vertexInputBindings.size());
@@ -762,9 +1001,16 @@ public:
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 			&shaderData.buffer,
 			sizeof(shaderData.values)));
+		VK_CHECK_RESULT(vulkanDevice->createBuffer(
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			&glTFModel.uniformBuffers.MaterialBuffer,
+			sizeof(VulkanglTFModel::MaterialFactor)
+		));
 
 		// Map persistent
 		VK_CHECK_RESULT(shaderData.buffer.map());
+		VK_CHECK_RESULT(glTFModel.uniformBuffers.MaterialBuffer.map());
 
 		updateUniformBuffers();
 	}
@@ -781,6 +1027,13 @@ public:
 	{
 		VulkanExampleBase::prepare();
 		loadAssets();
+
+		std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages
+		{
+			loadShader(getHomeworkShadersPath() + "homework1/GenBRDFLut.vert.spv", VK_SHADER_STAGE_VERTEX_BIT),
+			loadShader(getHomeworkShadersPath() + "homework1/GenBRDFLut.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT),
+		};
+		PBRGenTexture::generateBRDFLut(BRDFLutTexture, vulkanDevice, &device, &pipelineCache, shaderStages, &queue);
 		prepareUniformBuffers();
 		setupDescriptors();
 		preparePipelines();

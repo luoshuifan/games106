@@ -4,11 +4,14 @@
 layout(set = 1, binding = 0) uniform sampler2D samplerColorMap0;
 layout(set = 1, binding = 1) uniform sampler2D samplerMetallicRoughness_OcclusionMap;
 layout(set = 1, binding = 2) uniform sampler2D samplerNormalMap;
+layout(set = 1, binding = 3) uniform sampler2D samplerBRDFLutMap;
 
 layout (location = 0) in vec3 inNormal;
 layout (location = 1) in vec3 inColor;
 layout (location = 2) in vec2 inUV;
 layout (location = 3) in vec3 inWorldPos;
+layout (location = 4) in vec3 inTangent;
+layout (location = 5) in vec3 inBitangent;
 
 layout (location = 0) out vec4 outFragColor;
 
@@ -57,9 +60,8 @@ vec3 calNormal()
 	vec3 tangentNormal = texture(samplerNormalMap, inUV).xyz * 2.0 - 1.0;
 
 	vec3 N = normalize(inNormal);
-	vec3 up = vec3(0,1,0);
-	vec3 T = normalize(cross(up, N));
-	vec3 B = normalize(cross(N, T));
+	vec3 T = normalize(inTangent);
+	vec3 B = normalize(inBitangent);
 	mat3 TBN = mat3(T,B,N);
 	return normalize(TBN * tangentNormal);
 }
@@ -69,7 +71,7 @@ void main()
 	vec3 Color = vec3(0);
    
    vec3 BaseColor = texture(samplerColorMap0, inUV).rgb * inColor.xyz;
-	vec3 N = normalize(inNormal);
+	vec3 N = calNormal();
 	vec3 L = normalize(uboScene.lightPos.xyz - inWorldPos);
 	vec3 V = normalize(uboScene.viewPos.xyz - inWorldPos);
 	vec3 R = reflect(-V, N);
@@ -100,10 +102,18 @@ void main()
 	}
 
 	float Occlusion = texture(samplerMetallicRoughness_OcclusionMap, inUV).r;
+
+	vec3 reflection = vec3(1);
+	vec2 brdf = texture(samplerBRDFLutMap, vec2(NDotV, Roughness)).rg;
+
 	vec3 F = F_SchlickR(max(dot(N, V), 0.0), F0, Roughness);
 	vec3 kD = 1.0 - F;
 	kD *= 1.0 - Metallic;
-	Color += kD * BaseColor * Occlusion;
+
+	vec3 diffuse = BaseColor / PI;
+	vec3 specular = reflection * (F * brdf.x + brdf.y);
+
+	Color += (kD * diffuse + specular) * Occlusion;
 	
 	vec3 DebugColor = vec3(1);
 
