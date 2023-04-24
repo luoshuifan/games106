@@ -6,6 +6,14 @@ layout(set = 1, binding = 1) uniform sampler2D samplerMetallicRoughness_Occlusio
 layout(set = 1, binding = 2) uniform sampler2D samplerNormalMap;
 layout(set = 1, binding = 3) uniform sampler2D samplerBRDFLutMap;
 
+layout (set = 2, binding = 0) uniform MaterialFactor
+{
+	vec4 baseColorFactor;
+	vec3 emissiveFactor;
+	int metallicFactor;
+	int roughnessFactor;
+} materialFactor;
+
 layout (location = 0) in vec3 inNormal;
 layout (location = 1) in vec3 inColor;
 layout (location = 2) in vec2 inUV;

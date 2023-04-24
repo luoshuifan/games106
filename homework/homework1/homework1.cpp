@@ -109,6 +109,7 @@ public:
 		glm::vec3 emissiveFactor = glm::vec3(0.0f);
 		int32_t metallicFactor = 1;
 		int32_t roughnessFactor = 1;
+		int32_t tmp[7];
 	};
 
 	struct
@@ -404,9 +405,13 @@ public:
 					MaterialFactor materialFactor = materials[primitive.materialIndex].materialFactor;
 					VulkanglTFModel::Texture BaseColorTexture = textures[materials[primitive.materialIndex].baseColorTextureIndex];
 
-					memcpy(uniformBuffers.MaterialBuffer.mapped, &materialFactor, sizeof(MaterialFactor));
+					//memcpy(uniformBuffers.MaterialBuffer.mapped, &materialFactor, sizeof(MaterialFactor));
 
+					uint32_t BufferOffset = sizeof(MaterialFactor) * primitive.materialIndex;
+					//uint32_t BufferOffset = 64;
 					vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 1, 1, &images[BaseColorTexture.imageIndex].descriptorSet, 0, nullptr);
+					
+					vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 2, 1, &uniformBuffers.descriptorSet, 1, &BufferOffset);
 					vkCmdDrawIndexed(commandBuffer, primitive.indexCount, 1, primitive.firstIndex, 0, 0);
 				}
 			}
@@ -665,6 +670,7 @@ public:
 	struct DescriptorSetLayouts {
 		VkDescriptorSetLayout matrices;
 		VkDescriptorSetLayout textures;
+		VkDescriptorSetLayout uniformBuffers;
 	} descriptorSetLayouts;
 
 	VulkanExample() : VulkanExampleBase(ENABLE_VALIDATION)
@@ -689,6 +695,7 @@ public:
 		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 		vkDestroyDescriptorSetLayout(device, descriptorSetLayouts.matrices, nullptr);
 		vkDestroyDescriptorSetLayout(device, descriptorSetLayouts.textures, nullptr);
+		vkDestroyDescriptorSetLayout(device, descriptorSetLayouts.uniformBuffers, nullptr);
 
 		shaderData.buffer.destroy();
 		BRDFLutTexture.destroy();
@@ -863,7 +870,8 @@ public:
 		*/
 
 		std::vector<VkDescriptorPoolSize> poolSizes = {
-			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2),
+			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1),
+			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1),
 			// One combined image sampler per model image/texture
 			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, static_cast<uint32_t>(glTFModel.images.size())),
 		};
@@ -892,13 +900,16 @@ public:
 		VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &PBRCreateInfo, nullptr, &descriptorSetLayouts.textures));
 #endif
 
-		//VkDescriptorSetLayoutBinding BufferSetLayoutBinding = vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, vk_)
+		VkDescriptorSetLayoutBinding BufferSetLayoutBinding = vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, VK_SHADER_STAGE_FRAGMENT_BIT, 0);
+		VkDescriptorSetLayoutCreateInfo BufferSetLayoutCI = vks::initializers::descriptorSetLayoutCreateInfo(&BufferSetLayoutBinding, 1);
+		VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &BufferSetLayoutCI, nullptr, &descriptorSetLayouts.uniformBuffers));
 
 		// Pipeline layout using both descriptor sets (set 0 = matrices, set 1 = material)
-		std::array<VkDescriptorSetLayout, 2> setLayouts = 
+		std::array<VkDescriptorSetLayout, 3> setLayouts = 
 		{ 
 			descriptorSetLayouts.matrices, 
 			descriptorSetLayouts.textures, 
+			descriptorSetLayouts.uniformBuffers,
 		};
 		VkPipelineLayoutCreateInfo pipelineLayoutCI= vks::initializers::pipelineLayoutCreateInfo(setLayouts.data(), static_cast<uint32_t>(setLayouts.size()));
 		// We will use push constants to push the local matrices of a primitive to the vertex shader
@@ -934,6 +945,11 @@ public:
 
 			vkUpdateDescriptorSets(device, static_cast<uint32_t>(PBRWriteDescriptorSet.size()), PBRWriteDescriptorSet.data(), 0, nullptr);
 		}
+
+		VkDescriptorSetAllocateInfo BufferAllocInfo = vks::initializers::descriptorSetAllocateInfo(descriptorPool, &descriptorSetLayouts.uniformBuffers, 1);
+		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &BufferAllocInfo, &glTFModel.uniformBuffers.descriptorSet));
+		VkWriteDescriptorSet BufferWriteDescriptorSet = vks::initializers::writeDescriptorSet(glTFModel.uniformBuffers.descriptorSet, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 0, &glTFModel.uniformBuffers.MaterialBuffer.descriptor);
+		vkUpdateDescriptorSets(device, 1, &BufferWriteDescriptorSet, 0, nullptr);
 	}
 
 	void preparePipelines()
@@ -1005,8 +1021,13 @@ public:
 			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 			&glTFModel.uniformBuffers.MaterialBuffer,
-			sizeof(VulkanglTFModel::MaterialFactor)
+			sizeof(VulkanglTFModel::MaterialFactor) * glTFModel.materials.size()
 		));
+
+		VkPhysicalDeviceProperties deviceProperties;
+		vkGetPhysicalDeviceProperties(vulkanDevice->physicalDevice, &deviceProperties);
+		int32_t uniformLim = deviceProperties.limits.minUniformBufferOffsetAlignment;
+		int32_t si = sizeof(VulkanglTFModel::MaterialFactor);
 
 		// Map persistent
 		VK_CHECK_RESULT(shaderData.buffer.map());
@@ -1021,6 +1042,11 @@ public:
 		shaderData.values.model = camera.matrices.view;
 		shaderData.values.viewPos = camera.viewPos;
 		memcpy(shaderData.buffer.mapped, &shaderData.values, sizeof(shaderData.values));
+
+		std::vector<VulkanglTFModel::MaterialFactor> MaterialFactors(glTFModel.materials.size());
+		for (int32_t materialIndex = 0; materialIndex != glTFModel.materials.size(); ++materialIndex)
+			MaterialFactors[materialIndex] = glTFModel.materials[materialIndex].materialFactor;
+		memcpy(glTFModel.uniformBuffers.MaterialBuffer.mapped, MaterialFactors.data(), sizeof(VulkanglTFModel::MaterialFactor) * MaterialFactors.size());
 	}
 
 	void prepare()
