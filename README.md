@@ -14,7 +14,7 @@
 
 ### 作业提交
 
-课程学生注册方法：登录 http://cn.ces-alpha.org/course/register/GAMES106/  注册账号，填写个人信息，输入验证码ilovegraphics，即可进入课程主页，查看并提交作业
+课程学生注册方法：登录 [http://cn.ces-alpha.org/course/register/GAMES106/](http://cn.ces-alpha.org/course/register/GAMES106/) 注册账号，填写个人信息，输入验证码ilovegraphics，即可进入课程主页，查看并提交作业
 
 ### homework0
 
@@ -53,14 +53,28 @@ float3 Tonemap_ACES(const float3 c) {
 }
 ```
 
+直接运行会不成功缺少GLTF模型。以及字体文件。根据[文档](./data/README.md)下载 [https://vulkan.gpuinfo.org/downloads/vulkan_asset_pack_gltf.zip](https://vulkan.gpuinfo.org/downloads/vulkan_asset_pack_gltf.zip) 并且解压到./data文件夹中
+
 下面是相关的资料
 
-- GLTF格式文档 https://github.com/KhronosGroup/glTF
-- 带动画的GLTF模型已经上传到了目录data/buster_drone/busterDrone.gltf。这个gltf文件来自于 https://github.com/GPUOpen-LibrariesAndSDKs/Cauldron-Media/tree/v1.0.4/buster_drone
+- GLTF格式文档 [https://github.com/KhronosGroup/glTF](https://github.com/KhronosGroup/glTF)
+- 带动画的GLTF模型已经上传到了目录data/buster_drone/busterDrone.gltf。这个gltf文件来自于 [https://github.com/GPUOpen-LibrariesAndSDKs/Cauldron-Media/tree/v1.0.4/buster_drone](https://github.com/GPUOpen-LibrariesAndSDKs/Cauldron-Media/tree/v1.0.4/buster_drone)
   - Buster Drone by LaVADraGoN, published under a Attribution-NonCommercial 4.0 International (CC BY-NC 4.0) license
-  - 作者存放在sketchfab上展示的页面 https://sketchfab.com/3d-models/buster-drone-294e79652f494130ad2ab00a13fdbafd
+  - 作者存放在sketchfab上展示的页面 [https://sketchfab.com/3d-models/buster-drone-294e79652f494130ad2ab00a13fdbafd](https://sketchfab.com/3d-models/buster-drone-294e79652f494130ad2ab00a13fdbafd)
 - 完成这个作业需要额外学习的内容，都可以在作业框架下找到示例代码用于学习和参照（example code 是学习一个api最好的老师🙂）
   - 骨骼动画在这个工程下有可以学习的样例 examples/gltfskinning/gltfskinning.cpp
   - PBR材质 
     - 直接光照 examples/pbrbasic/pbrbasic.cpp 
     - 环境光照 examples/pbribl/pbribl.cpp
+
+### homework2
+扩展 homework/homework2 (来自examples/variablerateshading) 中的示例，使得shading rate 可以根据绘制结果本身得频率动态调整，从而在不影响整体绘制质量的前提下，减少着色率。
+可以阅读并参考 “Visually Lossless Content and Motion Adaptive Shading in Games” 中的描述，完成
+1. Content Adaptive Variable Shading Rate
+2. Motion Adaptive Variable Shading Rate
+
+reference论文在: [data/Visually Lossless Content and Motion Adaptive Shading in Games.pdf](./data/Visually%20Lossless%20Content%20and%20Motion%20Adaptive%20Shading%20in%20Games.pdf)
+
+### homework5
+homework5 比较独立，作业的框架代码以及作业要求：[GAMES106-HW5](https://github.com/Chaphlagical/GAMES106-HW5)
+ 
