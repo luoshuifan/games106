@@ -14,9 +14,14 @@ layout (set = 0, binding = 0) uniform UBOScene
 	vec4 viewPos;
 } uboScene;
 
+layout(std430, set = 3, binding = 0) readonly buffer JointMatrices {
+	mat4 jointMatrices[];
+};
+
 layout(push_constant) uniform PushConsts {
 	mat4 model;
 	mat4 invModel;
+	mat4 indexMat;
 } primitive;
 
 layout (location = 0) out vec3 outNormal;
@@ -31,7 +36,11 @@ void main()
 	outNormal = inNormal;
 	outColor = inColor;
 	outUV = inUV;
-	gl_Position = uboScene.projection * uboScene.view * primitive.model * vec4(inPos.xyz, 1.0);
+
+	int jointIndex = int(primitive.indexMat[0][0]);
+	mat4 jointMat = jointMatrices[jointIndex];
+
+	gl_Position = uboScene.projection * uboScene.view * jointMat * vec4(inPos.xyz, 1.0);
 	
 	outNormal = mat3(primitive.model) * inNormal;
 	outTangent = mat3(primitive.model) * inTangent;

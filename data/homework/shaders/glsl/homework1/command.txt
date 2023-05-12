@@ -1,5 +1,5 @@
-glslangValidator -V D:\Games\games106\data\homework\shaders\glsl\homework1\mesh.frag -o D:\Games\games106\data\homework\shaders\glsl\homework1\mesh.frag.spv
-glslangValidator -V D:\Games\games106\data\homework\shaders\glsl\homework1\mesh.vert -o D:\Games\games106\data\homework\shaders\glsl\homework1\mesh.vert.spv
+glslangValidator -V C:\Games\Games\106\homework\games106\data\homework\shaders\glsl\homework1\mesh.frag -o C:\Games\Games\106\homework\games106\data\homework\shaders\glsl\homework1\mesh.frag.spv
+glslangValidator -V C:\Games\Games\106\homework\games106\data\homework\shaders\glsl\homework1\mesh.vert -o C:\Games\Games\106\homework\games106\data\homework\shaders\glsl\homework1\mesh.vert.spv
 
 glslangValidator -V D:\Games\games106\data\homework\shaders\glsl\homework1\GenBRDFLut.frag -o D:\Games\games106\data\homework\shaders\glsl\homework1\GenBRDFLut.frag.spv
 glslangValidator -V D:\Games\games106\data\homework\shaders\glsl\homework1\GenBRDFLut.vert -o D:\Games\games106\data\homework\shaders\glsl\homework1\GenBRDFLut.vert.spv

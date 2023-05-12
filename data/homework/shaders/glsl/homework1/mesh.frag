@@ -78,7 +78,7 @@ void main()
 {
 	vec3 Color = vec3(0);
    
-   vec3 BaseColor = texture(samplerColorMap0, inUV).rgb * inColor.xyz;
+   vec3 BaseColor = texture(samplerColorMap0, inUV).rgb * inColor.xyz * materialFactor.baseColorFactor.xyz;
 	vec3 N = calNormal();
 	vec3 L = normalize(uboScene.lightPos.xyz - inWorldPos);
 	vec3 V = normalize(uboScene.viewPos.xyz - inWorldPos);
