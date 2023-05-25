@@ -30,6 +30,18 @@ VulkanExample::~VulkanExample()
 	vkDestroyPipeline(device, shadingRatePipelines.opaque, nullptr);
 	vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 	vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+
+	//compute
+	for (auto& pipeline : compute.pipelines)
+	{
+		vkDestroyPipeline(device, pipeline, nullptr);
+	}
+	vkDestroyPipelineLayout(device, compute.pipelineLayout, nullptr);
+	vkDestroyDescriptorSetLayout(device, compute.descriptorSetLayout, nullptr);
+	vkDestroySemaphore(device, compute.semaphore, nullptr);
+	vkDestroyCommandPool(device, compute.commandPool, nullptr);
+	compute.textures.textureVRS.destroy();
+
 	vkDestroyImageView(device, shadingRateImage.view, nullptr);
 	vkDestroyImage(device, shadingRateImage.image, nullptr);
 	vkFreeMemory(device, shadingRateImage.memory, nullptr);
@@ -124,6 +136,7 @@ void VulkanExample::setupDescriptors()
 	// Pool
 	const std::vector<VkDescriptorPoolSize> poolSizes = {
 		vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1),
+		vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,1),
 	};
 	VkDescriptorPoolCreateInfo descriptorPoolInfo = vks::initializers::descriptorPoolCreateInfo(poolSizes, 1);
 	VK_CHECK_RESULT(vkCreateDescriptorPool(device, &descriptorPoolInfo, nullptr, &descriptorPool));
@@ -294,6 +307,101 @@ void VulkanExample::prepareShadingRateImage()
 
 	vkFreeMemory(device, stagingMemory, nullptr);
 	vkDestroyBuffer(device, stagingBuffer, nullptr);
+}
+
+void VulkanExample::prepareComputeTextures()
+{
+	VkFormatProperties formatProperties;
+	vkGetPhysicalDeviceFormatProperties(physicalDevice, VK_FORMAT_R8_UINT, &formatProperties);
+	assert(formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT);
+
+	VkExtent3D imageExtent{};
+	imageExtent.width = static_cast<uint32_t>(ceil(width / (float)physicalDeviceShadingRateImagePropertiesNV.shadingRateTexelSize.width));
+	imageExtent.height = static_cast<uint32_t>(ceil(height / (float)physicalDeviceShadingRateImagePropertiesNV.shadingRateTexelSize.height));
+	imageExtent.depth = 1;
+
+	VkImageCreateInfo imageCI = vks::initializers::imageCreateInfo();
+	imageCI.imageType = VK_IMAGE_TYPE_2D;
+	imageCI.format = VK_FORMAT_R8_UINT;
+	imageCI.extent = imageExtent;
+	imageCI.mipLevels = 1;
+	imageCI.arrayLayers = 1;
+	imageCI.samples = VK_SAMPLE_COUNT_1_BIT;
+	imageCI.tiling = VK_IMAGE_TILING_OPTIMAL;
+	//VK_IMAGE_USAGE_SHADING_RATE_IMAGE_BIT_NV | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	imageCI.usage = VK_IMAGE_USAGE_SHADING_RATE_IMAGE_BIT_NV | VK_IMAGE_USAGE_STORAGE_BIT;
+	imageCI.flags = 0;
+	
+	std::vector<uint32_t> queueFamilyIndices;
+	if (vulkanDevice->queueFamilyIndices.graphics != vulkanDevice->queueFamilyIndices.compute)
+	{
+		queueFamilyIndices = {
+			vulkanDevice->queueFamilyIndices.graphics,
+			vulkanDevice->queueFamilyIndices.compute,
+		};
+		imageCI.sharingMode - VK_SHARING_MODE_CONCURRENT;
+		imageCI.queueFamilyIndexCount = 2;
+		imageCI.pQueueFamilyIndices = queueFamilyIndices.data();
+	}
+
+	VkMemoryAllocateInfo allocInfo = vks::initializers::memoryAllocateInfo();
+	VkMemoryRequirements memReqs;
+
+	VK_CHECK_RESULT(vkCreateImage(device, &imageCI, nullptr, &compute.textures.textureVRS.image));
+
+	vkGetImageMemoryRequirements(device, compute.textures.textureVRS.image, &memReqs);
+	allocInfo.allocationSize = memReqs.size;
+	allocInfo.memoryTypeIndex = vulkanDevice->getMemoryType(memReqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	VK_CHECK_RESULT(vkAllocateMemory(device, &allocInfo, nullptr, &compute.textures.textureVRS.deviceMemory));
+	VK_CHECK_RESULT(vkBindImageMemory(device, compute.textures.textureVRS.image, compute.textures.textureVRS.deviceMemory, 0));
+
+	VkCommandBuffer layoutCmd = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+
+	compute.textures.textureVRS.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+	vks::tools::setImageLayout(
+		layoutCmd, compute.textures.textureVRS.image,
+		VK_IMAGE_ASPECT_COLOR_BIT,
+		VK_IMAGE_LAYOUT_UNDEFINED,
+		compute.textures.textureVRS.imageLayout
+	);
+	vulkanDevice->flushCommandBuffer(layoutCmd, queue, true);
+
+	VkSamplerCreateInfo sampler = vks::initializers::samplerCreateInfo();
+	sampler.magFilter = VK_FILTER_LINEAR;
+	sampler.minFilter = VK_FILTER_LINEAR;
+	sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+	sampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+	sampler.addressModeV = sampler.addressModeU;
+	sampler.addressModeW = sampler.addressModeU;
+	sampler.mipLodBias = 0.0f;
+	sampler.maxAnisotropy = 1.0f;
+	sampler.compareOp = VK_COMPARE_OP_NEVER;
+}
+
+void VulkanExample::prepareCompute()
+{
+	vkGetDeviceQueue(device, vulkanDevice->queueFamilyIndices.compute, 0, &compute.queue);
+	
+	std::vector<VkDescriptorSetLayoutBinding> setLayoutBindings = {
+		vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,VK_SHADER_STAGE_COMPUTE_BIT,0),
+	};
+
+
+	VkDescriptorSetLayoutCreateInfo descriptorCI = vks::initializers::descriptorSetLayoutCreateInfo(setLayoutBindings);
+	VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &descriptorCI, nullptr, &compute.descriptorSetLayout));
+
+	VkPipelineLayoutCreateInfo pipelineLayoutCI = vks::initializers::pipelineLayoutCreateInfo(&compute.descriptorSetLayout, 1);
+
+	VK_CHECK_RESULT(vkCreatePipelineLayout(device, &pipelineLayoutCI, nullptr, &compute.pipelineLayout));
+
+	VkDescriptorSetAllocateInfo allocInfo =
+		vks::initializers::descriptorSetAllocateInfo(descriptorPool, &compute.descriptorSetLayout, 1);
+
+	VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &compute.descriptorSet));
+	std::vector<VkWriteDescriptorSet> computeWriteDescriptorSets = {
+		//vks::initializers::writeDescriptorSet(compute.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 0, &textureColorMap.descriptor),
+	};
+
 }
 
 void VulkanExample::preparePipelines()

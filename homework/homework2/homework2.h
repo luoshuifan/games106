@@ -42,6 +42,25 @@ public:
 		VkPipeline masked;
 	};
 
+	struct ComputeTextures
+	{
+		vks::Texture2D textureVRS;
+	};
+
+	struct Compute
+	{
+		VkQueue queue;
+		VkCommandPool commandPool;
+		VkCommandBuffer commandBuffer;
+		VkSemaphore semaphore;
+		VkDescriptorSetLayout descriptorSetLayout;
+		VkDescriptorSet descriptorSet;
+		VkPipelineLayout pipelineLayout;
+		std::vector<VkPipeline> pipelines;
+		int32_t pipelineIndex = 0;
+		ComputeTextures textures;
+	} compute;
+
 	Pipelines basePipelines;
 	Pipelines shadingRatePipelines;
 
@@ -65,6 +84,8 @@ public:
 	void preparePipelines();
 	void prepareUniformBuffers();
 	void updateUniformBuffers();
+	void prepareComputeTextures();
+	void prepareCompute();
 	void prepare();
 	virtual void render();
 	virtual void OnUpdateUIOverlay(vks::UIOverlay* overlay);

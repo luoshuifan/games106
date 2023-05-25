@@ -997,7 +997,7 @@ bool VulkanExampleBase::initVulkan()
 
 	// Select physical device to be used for the Vulkan example
 	// Defaults to the first device unless specified by command line
-	uint32_t selectedDevice = 0;
+	uint32_t selectedDevice = 1;
 
 #if !defined(VK_USE_PLATFORM_ANDROID_KHR)
 	// GPU selection via command line argument
